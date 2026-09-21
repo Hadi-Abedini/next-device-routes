@@ -1,0 +1,56 @@
+{
+  "name": "next-device-routes",
+  "version": "0.2.0",
+  "description": "Device-type and crawler aware routing for the Next.js App Router. No middleware, no dependencies.",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "lib/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "prepublishOnly": "npm test"
+  },
+  "keywords": [
+    "nextjs",
+    "next",
+    "app-router",
+    "dynamic-rendering",
+    "user-agent",
+    "device-detection",
+    "mobile",
+    "crawler",
+    "seo",
+    "rewrites"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hadi-Abedini/next-device-routes.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Hadi-Abedini/next-device-routes/issues"
+  },
+  "homepage": "https://github.com/Hadi-Abedini/next-device-routes#readme",
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "peerDependencies": {
+    "next": ">=13.4.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
