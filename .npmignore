@@ -51,4 +51,5 @@ Thumbs.db
 .vercel/
 *.tsbuildinfo
 
+example/
 graphify-out/
