@@ -46,6 +46,7 @@ function withDeviceRoutes(nextConfig = {}, options = {}) {
     pageExtensions = nextConfig.pageExtensions,
     redirectVariantPaths = false,
     permanentRedirects = false,
+    collapse = true,
     cwd = process.cwd(),
     debug = false,
   } = options
@@ -61,15 +62,17 @@ function withDeviceRoutes(nextConfig = {}, options = {}) {
       return (cache = EMPTY)
     }
 
-    cache = buildRules(dir, variants, pageExtensions)
+    cache = buildRules(dir, variants, pageExtensions, { collapse })
 
     if (debug) {
       const label = cache.folders.length ? cache.folders.join(', ') : '(none found)'
+      const ruleCount = cache.beforeFiles.length + cache.afterFiles.length
       console.log(`[next-device-routes] variants: ${label}`)
       for (const [source, destination] of cache.pairs) {
         console.log(`  ${source}  ->  ${destination}`)
       }
       if (!cache.pairs.length) console.log('  no variant pages found')
+      else console.log(`  ${cache.pairs.length} routes in ${ruleCount} rewrite rule(s)`)
     }
 
     return cache

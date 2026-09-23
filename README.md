@@ -68,6 +68,10 @@ serves it.
 | `/about` | Googlebot | `app/bot/about/page.tsx` |
 | `/contact` | iPhone | `app/contact/page.tsx` (fallback) |
 
+A fallback page like `/contact` above has no way to tell devices apart on its own — see
+[Reading the device in your components](#reading-the-device-in-your-components) for a hook and
+context that cover exactly that case.
+
 ## Supported route types
 
 | Folder | Generated source |
@@ -184,6 +188,72 @@ export default withDeviceRoutes(async (phase, { defaultConfig }) => ({
 }))
 ```
 
+## Reading the device in your components
+
+Routing handles pages that genuinely differ per device. But a route with no dedicated
+mobile/tablet/bot version — like `/contact` in the example above — has no way to tell devices
+apart on its own. `getDevice()`, `<DeviceProvider>` and `useDevice()` cover that case:
+
+```tsx
+// app/contact/layout.tsx — a Server Component
+import { getDevice } from 'next-device-routes/server'
+import { DeviceProvider } from 'next-device-routes/context'
+
+export default async function ContactLayout({ children }: { children: React.ReactNode }) {
+  const device = await getDevice() // reads the User-Agent header, once, on the server
+  return <DeviceProvider variant={device.variant}>{children}</DeviceProvider>
+}
+```
+
+```tsx
+// app/components/nav.tsx — a Client Component, anywhere under that layout
+'use client'
+import { useDevice } from 'next-device-routes/context'
+
+export function Nav() {
+  const { isMobile } = useDevice()
+  return isMobile ? <MobileNav /> : <DesktopNav />
+}
+```
+
+`getDevice()` runs the same matching rules as `withDeviceRoutes` and returns:
+
+```ts
+{ variant: 'mobile' | 'tablet' | 'bot' | string | null, isMobile, isTablet, isBot, isBase }
+```
+
+`variant` is `null` and `isBase` is `true` when nothing matched (the common desktop case).
+`isMobile` / `isTablet` / `isBot` are convenience flags for the three default variant names; for a
+custom variant (like a `tv` folder), compare `variant === 'tv'` directly.
+
+You don't need the client hook at all if a Server Component is enough — `getDevice()` works
+anywhere `next/headers` does (Server Components, Route Handlers, Server Actions,
+`generateMetadata`):
+
+```tsx
+export default async function Page() {
+  const device = await getDevice()
+  return device.isBot ? <StaticVersion /> : <InteractiveVersion />
+}
+```
+
+**Keep it in sync with your `variants`.** If you passed a custom `variants` object to
+`withDeviceRoutes`, pass the *same* object to `getDevice({ variants })` — otherwise the two can
+disagree about what counts as "mobile". Defining it once in its own module and importing it in
+both places avoids the drift entirely:
+
+```ts
+// device-variants.ts
+export const variants = { bot: [...], tablet: [...], mobile: [...] }
+```
+
+**This costs static rendering — scope it deliberately.** `headers()` is a dynamic API: any layout
+that calls `getDevice()` makes every page under it server-rendered on every request, not
+statically generated. Put it in the layout of just the route segment that needs it (as above), not
+in the root layout, or you'll silently lose static generation for your entire site. The
+[example](./example) does exactly this — only `/contact` is dynamic; every other route, including
+the `mobile` and `tablet` variants, stays static.
+
 ## Caveats
 
 **CDN caching.** One URL now returns different HTML per device, so any cache in front of your app
@@ -216,6 +286,10 @@ User-Agent conditions become `has` / `missing` entries on each rewrite. Next com
 case-sensitive anchored RegExp, so each token is expanded into character classes
 (`iPad` → `[iI][pP][aA][dD]`) to make matching case-insensitive.
 
+`getDevice()` doesn't reuse those rewrite conditions — it compiles the same `variants` into a plain
+case-insensitive `RegExp` and tests the request's `user-agent` header directly. Simpler, since a
+runtime `.test()` call has no need for Next's anchored, flag-less rewrite format.
+
 ## Example
 
 A runnable TypeScript app lives in [`example/`](./example).
@@ -238,15 +312,20 @@ npm publish
 ```
 
 Update `name`, `author`, `repository` and `LICENSE` first. `files` in `package.json` already limits
-the tarball to `index.js`, `index.d.ts`, `lib/`, `README.md` and `LICENSE`, so no `.npmignore` is
-needed. Bump releases with `npm version patch|minor|major`; a published version can never be
-overwritten.
+the tarball to `index.js`, `server.js`, `context.js`, their `.d.ts` files, `lib/`, `README.md` and
+`LICENSE` — no `.npmignore` needed. Bump releases with `npm version patch|minor|major`; a published
+version can never be overwritten.
 
 ## Development
 
 ```bash
-npm test   # node:test, no dependencies
+npm install   # pulls in next/react/react-dom as devDependencies, for the test suite only
+npm test      # node:test — 43 tests, no test framework dependency
 ```
+
+The package itself has zero runtime `dependencies`; `next` and `react` are `peerDependencies` (any
+Next.js app already has both) and only appear as `devDependencies` here so `npm test` can exercise
+`next/headers` and render `<DeviceProvider>` with real React.
 
 ## License
 

@@ -1,6 +1,6 @@
 {
   "name": "next-device-routes",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Device-type and crawler aware routing for the Next.js App Router. No middleware, no dependencies.",
   "main": "./index.js",
   "types": "./index.d.ts",
@@ -9,11 +9,23 @@
       "types": "./index.d.ts",
       "default": "./index.js"
     },
+    "./server": {
+      "types": "./server.d.ts",
+      "default": "./server.js"
+    },
+    "./context": {
+      "types": "./context.d.ts",
+      "default": "./context.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "index.js",
     "index.d.ts",
+    "server.js",
+    "server.d.ts",
+    "context.js",
+    "context.d.ts",
     "lib/",
     "README.md",
     "LICENSE"
@@ -32,7 +44,9 @@
     "mobile",
     "crawler",
     "seo",
-    "rewrites"
+    "rewrites",
+    "react-hook",
+    "context"
   ],
   "author": "",
   "license": "MIT",
@@ -48,7 +62,13 @@
     "node": ">=18.17.0"
   },
   "peerDependencies": {
-    "next": ">=13.4.0"
+    "next": ">=13.4.0",
+    "react": ">=18.0.0"
+  },
+  "devDependencies": {
+    "next": "^15.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   },
   "publishConfig": {
     "access": "public"
