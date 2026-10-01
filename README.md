@@ -70,7 +70,7 @@ serves it.
 
 A fallback page like `/contact` above has no way to tell devices apart on its own — see
 [Reading the device in your components](#reading-the-device-in-your-components) for a hook and
-context that cover exactly that case.
+context that cover exactly that case without making the rest of the site dynamic.
 
 ## Supported route types
 
@@ -190,23 +190,52 @@ export default withDeviceRoutes(async (phase, { defaultConfig }) => ({
 
 ## Reading the device in your components
 
-Routing handles pages that genuinely differ per device. But a route with no dedicated
-mobile/tablet/bot version — like `/contact` in the example above — has no way to tell devices
-apart on its own. `getDevice()`, `<DeviceProvider>` and `useDevice()` cover that case:
+`useDevice()` reads the device from the closest `<DeviceProvider>`. There are two ways to feed it,
+and the difference decides whether a route can be statically generated.
+
+**Static path — the device is already known.** The rewrites pick a variant *before* rendering
+starts, so inside `app/mobile/` the device is a build-time fact. Give the provider a literal; no
+request API is touched and every route stays static:
 
 ```tsx
-// app/contact/layout.tsx — a Server Component
-import { getDevice } from 'next-device-routes/server'
+// app/layout.tsx — shared by every route, so it must not read the request
 import { DeviceProvider } from 'next-device-routes/context'
 
-export default async function ContactLayout({ children }: { children: React.ReactNode }) {
-  const device = await getDevice() // reads the User-Agent header, once, on the server
-  return <DeviceProvider variant={device.variant}>{children}</DeviceProvider>
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body>
+        <DeviceProvider variant={null}>{children}</DeviceProvider>
+      </body>
+    </html>
+  )
 }
 ```
 
 ```tsx
-// app/components/nav.tsx — a Client Component, anywhere under that layout
+// app/mobile/layout.tsx — the closest provider wins
+import { DeviceProvider } from 'next-device-routes/context'
+
+export default function MobileLayout({ children }: { children: React.ReactNode }) {
+  return <DeviceProvider variant="mobile">{children}</DeviceProvider>
+}
+```
+
+**Dynamic path — only the request can tell.** A fallback route with no variant folder — like
+`/contact` above — is served to every device. To tell them apart there, render `<DeviceBoundary>`
+in that segment only. It calls `getDevice()` and provides the result:
+
+```tsx
+// app/contact/layout.tsx
+import { DeviceBoundary } from 'next-device-routes/server'
+
+export default function ContactLayout({ children }: { children: React.ReactNode }) {
+  return <DeviceBoundary>{children}</DeviceBoundary> // only /contact becomes dynamic
+}
+```
+
+```tsx
+// app/components/nav.tsx — a Client Component, under either kind of provider
 'use client'
 import { useDevice } from 'next-device-routes/context'
 
@@ -215,6 +244,10 @@ export function Nav() {
   return isMobile ? <MobileNav /> : <DesktopNav />
 }
 ```
+
+`<DeviceBoundary variants={variants}>` accepts the same `variants` as `getDevice()`. The previous
+form — `await getDevice()` in a layout, then `<DeviceProvider variant={device.variant}>` — still
+works and behaves identically.
 
 `getDevice()` runs the same matching rules as `withDeviceRoutes` and returns:
 
@@ -247,12 +280,31 @@ both places avoids the drift entirely:
 export const variants = { bot: [...], tablet: [...], mobile: [...] }
 ```
 
-**This costs static rendering — scope it deliberately.** `headers()` is a dynamic API: any layout
-that calls `getDevice()` makes every page under it server-rendered on every request, not
-statically generated. Put it in the layout of just the route segment that needs it (as above), not
-in the root layout, or you'll silently lose static generation for your entire site. The
-[example](./example) does exactly this — only `/contact` is dynamic; every other route, including
-the `mobile` and `tablet` variants, stays static.
+### Static vs. dynamic rendering
+
+`getDevice()` and `<DeviceBoundary>` read `headers()`. During `next build`, Next.js prerenders each
+route by rendering its whole tree — root layout, nested layouts, page. If any of them reads
+`headers()`, that route bails out of prerendering and is rendered on every request. A root layout
+belongs to every route, so reading the device there makes **the entire site** dynamic.
+
+The rule: **request reads go only in the segments that need them; shared layouts get a literal.**
+Then a route is dynamic exactly when its own tree contains `getDevice()` / `<DeviceBoundary>`. The
+[example](./example) does this — only `/contact` is dynamic; every other route, including the
+`mobile` and `tablet` variants, stays static.
+
+Limits imposed by Next.js itself:
+
+- **Granularity is the route.** Without Partial Prerendering, one request read anywhere in a
+  route's tree makes that whole route dynamic. There is no supported way to read a header and
+  still prerender the same route — the value does not exist at build time. Forcing it
+  (`dynamic = 'force-static'`) makes `headers()` return empty, so the device is always the base.
+- **With Cache Components (PPR)**, wrap `<DeviceBoundary>` in `<Suspense>`: the route keeps a
+  prerendered static shell and only the boundary's subtree streams at request time.
+- **Client-side detection** (reading `navigator.userAgent` in an effect) keeps a route static but
+  renders the base markup first, then changes after hydration. Prefer a variant folder.
+- **Request isolation** comes from Next.js: `headers()` is scoped to the current request with
+  AsyncLocalStorage. This package keeps no request data in module state — only the compiled
+  `variants` rules are cached, per `variants` object.
 
 ## Caveats
 
@@ -273,7 +325,8 @@ search engine guidelines. The `bot` variant is meant for rendering strategy — 
 markup — not for different content.
 
 **Shared root layout.** `app/layout.tsx` wraps every variant. Put variant-only chrome in
-`app/mobile/layout.tsx`.
+`app/mobile/layout.tsx`, and keep `getDevice()` / `<DeviceBoundary>` out of the root layout — see
+[Static vs. dynamic rendering](#static-vs-dynamic-rendering).
 
 ## How it works
 
@@ -319,9 +372,13 @@ version can never be overwritten.
 ## Development
 
 ```bash
-npm install   # pulls in next/react/react-dom as devDependencies, for the test suite only
-npm test      # node:test — 43 tests, no test framework dependency
+npm install               # pulls in next/react/react-dom as devDependencies, for the test suite only
+npm test                  # node:test unit tests, no test framework dependency
+npm run test:integration  # real `next build` of test/fixtures/rendering-app
 ```
+
+The integration suite checks which routes Next.js prerenders, that request values reach the
+components that read them, and that concurrent requests never see each other's headers.
 
 The package itself has zero runtime `dependencies`; `next` and `react` are `peerDependencies` (any
 Next.js app already has both) and only appear as `devDependencies` here so `npm test` can exercise

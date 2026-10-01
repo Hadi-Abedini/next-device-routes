@@ -14,12 +14,16 @@ export interface DeviceInfo {
 }
 
 export interface DeviceProviderProps {
-  /** Pass `(await getDevice()).variant` from a Server Component. */
+  /**
+   * A literal known at build time (`null` in the root layout, `'mobile'` in
+   * `app/mobile/layout`) keeps the route static. Use `<DeviceBoundary>` from
+   * `next-device-routes/server` where only the request can tell.
+   */
   variant: string | null
   children: ReactNode
 }
 
-/** Wrap the root layout's children so descendant Client Components can call `useDevice()`. */
+/** Provide a device to descendant Client Components that call `useDevice()`. The closest provider wins. */
 export declare function DeviceProvider(props: DeviceProviderProps): ReactElement
 
 /** Must be called under a `<DeviceProvider>`; throws otherwise. */

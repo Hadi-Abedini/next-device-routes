@@ -3,7 +3,8 @@
 import { useDevice } from 'next-device-routes/context'
 
 /**
- * A Client Component reading the device that the root layout resolved.
+ * A Client Component reading the device from the closest provider — here the
+ * `<DeviceBoundary>` in `app/contact/layout.tsx`.
  * Used on `/contact`, which has no dedicated mobile/tablet/bot page — the
  * route itself can't tell devices apart, so this is exactly where the hook
  * earns its keep.

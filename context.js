@@ -14,11 +14,15 @@ const { toDeviceInfo } = require('./lib/variants')
 const DeviceContext = createContext(undefined)
 
 /**
- * Render once near the root — typically in the root layout, right after
- * `const device = await getDevice()`. Only the small `variant` string
- * crosses the server/client boundary; the full DeviceInfo shape is rebuilt
- * from it here, via the same `toDeviceInfo` used by `getDevice()`, so the two
- * can never disagree.
+ * Give it a literal `variant` wherever the device is already known when the
+ * route is built — `variant={null}` in the root layout, `variant="mobile"` in
+ * `app/mobile/layout` — and the route stays statically generated. Providers
+ * nest; the closest one wins. Where only the real request can tell, render
+ * `<DeviceBoundary>` from 'next-device-routes/server' in that segment instead.
+ *
+ * Only the small `variant` string crosses the server/client boundary; the
+ * full DeviceInfo shape is rebuilt from it here, via the same `toDeviceInfo`
+ * used by `getDevice()`, so the two can never disagree.
  *
  * @param {{ variant: string | null, children: import('react').ReactNode }} props
  */
@@ -34,7 +38,7 @@ function useDevice() {
   if (value === undefined) {
     throw new Error(
       '[next-device-routes] useDevice() was called outside <DeviceProvider>. ' +
-        'Wrap your root layout with <DeviceProvider variant={...}> first.'
+        'Wrap a layout above it with <DeviceProvider variant={...}> or <DeviceBoundary>.'
     )
   }
   return value

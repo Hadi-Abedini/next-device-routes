@@ -1,6 +1,6 @@
 {
   "name": "next-device-routes",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Device-type and crawler aware routing for the Next.js App Router. No middleware, no dependencies.",
   "main": "./index.js",
   "types": "./index.d.ts",
@@ -32,7 +32,8 @@
   ],
   "scripts": {
     "test": "node --test \"test/*.test.js\"",
-    "prepublishOnly": "npm test"
+    "test:integration": "node --test \"test/integration/*.test.js\"",
+    "prepublishOnly": "npm test && npm run test:integration"
   },
   "keywords": [
     "nextjs",

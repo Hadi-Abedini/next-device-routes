@@ -5,9 +5,9 @@ const assert = require('node:assert/strict')
 const React = require('react')
 const { renderToStaticMarkup } = require('react-dom/server')
 
-const { compileMatcher, toDeviceInfo, defaultVariants } = require('../lib/variants.js')
+const { compileMatcher, getMatcher, toDeviceInfo, defaultVariants } = require('../lib/variants.js')
 const { DeviceProvider, useDevice } = require('../context.js')
-const { getDevice } = require('../server.js')
+const { getDevice, DeviceBoundary } = require('../server.js')
 
 const UA = {
   desktop: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36',
@@ -58,6 +58,28 @@ test('compileMatcher respects key order as priority', () => {
 
   const reordered = compileMatcher({ mobile: defaultVariants.mobile, bot: defaultVariants.bot })
   assert.equal(reordered(UA.googlebotMobile), 'mobile')
+})
+
+test('getMatcher compiles once per variants object', () => {
+  assert.equal(getMatcher(defaultVariants), getMatcher(defaultVariants))
+
+  const custom = { tv: ['Tizen'] }
+  assert.notEqual(getMatcher(custom), getMatcher(defaultVariants))
+  assert.equal(getMatcher(custom)('SmartTV Tizen'), 'tv')
+})
+
+test('a shared matcher keeps no state between calls', async () => {
+  // The cached matcher is reused across requests, so interleaved calls with
+  // different User-Agents must each get their own answer.
+  const match = getMatcher(defaultVariants)
+  const inputs = Array.from({ length: 50 }, (_, i) => Object.values(UA)[i % 4])
+  const results = await Promise.all(
+    inputs.map(async (ua) => {
+      await new Promise((resolve) => setTimeout(resolve, Math.random() * 5))
+      return [ua, match(ua)]
+    })
+  )
+  for (const [ua, variant] of results) assert.equal(variant, compileMatcher(defaultVariants)(ua))
 })
 
 /* ------------------------------ toDeviceInfo ------------------------------ */
@@ -121,6 +143,20 @@ test('useDevice throws with a clear message outside DeviceProvider', () => {
   )
 })
 
+test('the closest DeviceProvider wins', () => {
+  // A root layout provides `null`; a variant layout overrides it with a literal.
+  const html = unescape(
+    renderToStaticMarkup(
+      React.createElement(
+        DeviceProvider,
+        { variant: null },
+        React.createElement(DeviceProvider, { variant: 'mobile' }, React.createElement(Probe))
+      )
+    )
+  )
+  assert.match(html, /"variant":"mobile"/)
+})
+
 test('DeviceProvider defaults variant to null when omitted', () => {
   const html = unescape(
     renderToStaticMarkup(React.createElement(DeviceProvider, null, React.createElement(Probe)))
@@ -137,4 +173,9 @@ test('getDevice() delegates to the real next/headers()', async () => {
   // package calls the real API correctly; full request-handling behavior is
   // covered by the example app under a running `next start` server.
   await assert.rejects(() => getDevice(), /called outside a request scope/)
+})
+
+test('DeviceBoundary reads the request through getDevice()', async () => {
+  // Request-time behavior is covered by test/integration/rendering.test.js.
+  await assert.rejects(() => DeviceBoundary({ children: null }), /called outside a request scope/)
 })
