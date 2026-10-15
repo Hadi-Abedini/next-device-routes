@@ -9,7 +9,8 @@ const path = require('node:path')
 const withDeviceRoutes = require('../index.js')
 const { defaultVariants } = require('../index.js')
 const { parseSegment, pageMatcher } = require('../lib/scan.js')
-const { userAgentPattern, normalizeVariant } = require('../lib/variants.js')
+const { userAgentPattern, userAgentAppliesPattern, normalizeVariant, CRAWLER_TOKENS } = require('../lib/variants.js')
+const { resolveVariantPath } = require('../lib/rules.js')
 
 /* ------------------------------ fixture ------------------------------ */
 
@@ -45,23 +46,25 @@ const build = (options = {}) => withDeviceRoutes({}, { cwd: root, ...options }).
 function expand(rules) {
   const out = []
   for (const rule of rules) {
-    const m = /^\/:__dr\((.+)\)$/.exec(rule.source)
+    const m = /^(.*)\/:__dr\((.+)\)$/.exec(rule.source)
     if (!m) {
       out.push({ ...rule, source: rule.source, destination: rule.destination })
       continue
     }
     const prefix = rule.destination.replace(/\/:__dr$/, '')
-    for (const p of m[1].split('|')) {
-      out.push({ ...rule, source: `/${p}`, destination: `${prefix}/${p}` })
+    for (const p of m[2].split('|')) {
+      out.push({ ...rule, source: `${m[1]}/${p}`, destination: `${prefix}/${p}` })
     }
   }
   return out
 }
 const find = (rules, source) => expand(rules).filter((r) => r.source === source)
 const uaOf = (rule) => rule.has[0].value
+/** Mirrors how Next.js evaluates a rule: every `has` must match, no `missing` may. */
 const matches = (rule, ua) => {
-  if (rule.missing && new RegExp(`^${rule.missing[0].value}$`).test(ua)) return false
-  return new RegExp(`^${uaOf(rule)}$`).test(ua)
+  const hit = (cond) => new RegExp(`^${cond.value}$`).test(ua)
+  if ((rule.missing || []).some(hit)) return false
+  return rule.has.every(hit)
 }
 
 /* ------------------------------ segments ------------------------------ */
@@ -353,6 +356,268 @@ test('redirects are skipped by default and user redirects survive', async () => 
     { cwd: root }
   )
   assert.deepEqual(await config.redirects(), [{ source: '/x', destination: '/y', permanent: true }])
+})
+
+
+/* ------------------------- strict variant priority ------------------------- */
+
+const GOOGLEBOT_SMARTPHONE =
+  'Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) ' +
+  'Chrome/120.0.0.0 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'
+
+/** Which generated rules would Next.js apply to this request, in a given tree? */
+function applicable(rules, source, ua) {
+  return expand(rules).filter((r) => r.source === source && matches(r, ua)).map((r) => r.destination)
+}
+
+test('a higher-priority variant wins even when it has no page for the route', async () => {
+  const { beforeFiles } = await build()
+  // bot/ only has /about; mobile/ has /about and /cart (and more).
+  assert.deepEqual(applicable(beforeFiles, '/about', GOOGLEBOT_SMARTPHONE), ['/bot/about'])
+  assert.deepEqual(
+    applicable(beforeFiles, '/cart', GOOGLEBOT_SMARTPHONE),
+    [],
+    'a crawler is a bot, not a phone that happens to lack a bot page — the base route serves it'
+  )
+  assert.deepEqual(applicable(beforeFiles, '/cart', UA.iphone), ['/mobile/cart'])
+})
+
+test('variants never overlap, so rule order across phases cannot matter', async () => {
+  const { beforeFiles, afterFiles } = await build()
+  const all = expand([...beforeFiles, ...afterFiles])
+  for (const ua of Object.values({ ...UA, GOOGLEBOT_SMARTPHONE })) {
+    const variants = new Set(all.filter((r) => matches(r, ua)).map((r) => r.destination.split('/')[1]))
+    assert.ok(variants.size <= 1, `UA matched several variants: ${[...variants]}`)
+  }
+})
+
+test('bot dynamic pages beat mobile static pages for the same crawler', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ndr-prio-'))
+  for (const rel of ['bot/blog/[slug]', 'mobile/blog/new']) {
+    fs.mkdirSync(path.join(dir, 'app', rel), { recursive: true })
+    fs.writeFileSync(path.join(dir, 'app', rel, 'page.js'), 'x')
+  }
+  const { beforeFiles, afterFiles } = await withDeviceRoutes({}, { cwd: dir }).rewrites()
+  // The static mobile rule (beforeFiles) must not be reachable by a crawler at all.
+  assert.deepEqual(applicable(beforeFiles, '/blog/new', GOOGLEBOT_SMARTPHONE), [])
+  assert.deepEqual(applicable(afterFiles, '/blog/:slug', GOOGLEBOT_SMARTPHONE), ['/bot/blog/:slug'])
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('priority covers variants that have no folder, and honours their exclude', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ndr-prio2-'))
+  fs.mkdirSync(path.join(dir, 'app/mobile/about'), { recursive: true })
+  fs.writeFileSync(path.join(dir, 'app/mobile/about/page.js'), 'x')
+
+  // `tv` has priority but no folder; it excludes "Mobi", so a phone "TV" UA is not a tv.
+  const variants = { tv: { match: ['SmartTV'], exclude: ['Mobi'] }, mobile: ['Mobi'] }
+  const { beforeFiles } = await withDeviceRoutes({}, { cwd: dir, variants }).rewrites()
+
+  assert.deepEqual(applicable(beforeFiles, '/about', 'Mozilla/5.0 SmartTV Mobi'), ['/mobile/about'])
+  assert.deepEqual(applicable(beforeFiles, '/about', 'Mozilla/5.0 SmartTV'), [], 'a real tv: base route')
+  assert.deepEqual(applicable(beforeFiles, '/about', 'Mozilla/5.0 Mobi'), ['/mobile/about'])
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('userAgentAppliesPattern is an anchored, case-insensitive match-and-not-exclude', () => {
+  const re = new RegExp(`^${userAgentAppliesPattern({ match: ['Mobi'], exclude: ['iPad'] })}$`)
+  assert.ok(re.test('x MOBI y'))
+  assert.ok(!re.test('x Mobi iPad'))
+  assert.ok(!re.test('desktop'))
+  const plain = new RegExp(`^${userAgentAppliesPattern({ match: ['Mobi'], exclude: null })}$`)
+  assert.ok(plain.test('x Mobi'))
+})
+
+test('the token lists are exported for building custom variants', () => {
+  const api = require('../index.js')
+  assert.equal(api.CRAWLER_TOKENS, CRAWLER_TOKENS)
+  assert.ok(api.TABLET_TOKENS.includes('iPad') && api.MOBILE_TOKENS.includes('iPhone'))
+})
+
+test('letting Googlebot through as a phone (the README SEO recipe) works end to end', async () => {
+  const { CRAWLER_TOKENS: tokens } = require('../index.js')
+  const { beforeFiles } = await build({
+    variants: {
+      bot: { match: [...tokens], exclude: ['Googlebot'] },
+      tablet: defaultVariants.tablet,
+      mobile: defaultVariants.mobile,
+    },
+  })
+  // Googlebot smartphone is now treated as a phone ...
+  assert.deepEqual(applicable(beforeFiles, '/cart', GOOGLEBOT_SMARTPHONE), ['/mobile/cart'])
+  // ... while other crawlers are still bots.
+  assert.deepEqual(applicable(beforeFiles, '/about', 'Mozilla/5.0 (compatible; bingbot/2.0)'), ['/bot/about'])
+})
+
+/* ------------------------------ crawler tokens ------------------------------ */
+
+test('crawler tokens do not capture real people', () => {
+  const botRe = new RegExp(`^${userAgentPattern(CRAWLER_TOKENS)}$`)
+  const person = [
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 [Pinterest/iOS]',
+    'Mozilla/5.0 (Windows NT 10.0) Chrome/120 Safari/537.36 Spiderman/1.0',
+  ]
+  for (const ua of person) assert.ok(!botRe.test(ua), ua)
+
+  const crawlers = [
+    'Mozilla/5.0 (compatible; Pinterestbot/1.0; +http://www.pinterest.com/bot.html)',
+    'Pinterest/0.2 (+http://www.pinterest.com/bot.html)',
+    'Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)',
+    'Sosospider+(+http://help.soso.com/webspider.htm)',
+    'WhatsApp/2.23.20.0 A',
+    'Mozilla/5.0 (compatible; Google-InspectionTool/1.0)',
+    GOOGLEBOT_SMARTPHONE,
+  ]
+  for (const ua of crawlers) assert.ok(botRe.test(ua), ua)
+})
+
+/* ------------------------- root and per-variant dir ------------------------- */
+
+/** A project whose routes all start at app/[lang]. */
+function langProject(pages) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ndr-lang-'))
+  for (const rel of pages) {
+    const file = path.join(dir, 'src/app', rel)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, 'export default function P(){return null}')
+  }
+  return dir
+}
+const LANG_PAGES = [
+  '[lang]/page.tsx',
+  '[lang]/about/page.tsx',
+  '[lang]/mobile/page.tsx',
+  '[lang]/mobile/about/page.tsx',
+  '[lang]/mobile/pricing/page.tsx',
+  '[lang]/mobile/blog/[slug]/page.tsx',
+  '[lang]/tablet/page.tsx',
+  '[lang]/bot/about/page.tsx',
+]
+const pairsOf = (rules) => expand(rules).map((r) => `${r.source} -> ${r.destination}`).sort()
+
+test('root points every variant at a folder below the app directory', async () => {
+  const dir = langProject(LANG_PAGES)
+  const { beforeFiles, afterFiles } = await withDeviceRoutes({}, { cwd: dir, root: '[lang]' }).rewrites()
+
+  assert.deepEqual(pairsOf([...beforeFiles, ...afterFiles]), [
+    '/:lang -> /:lang/mobile',
+    '/:lang -> /:lang/tablet',
+    '/:lang/about -> /:lang/bot/about',
+    '/:lang/about -> /:lang/mobile/about',
+    '/:lang/blog/:slug -> /:lang/mobile/blog/:slug',
+    '/:lang/pricing -> /:lang/mobile/pricing',
+  ])
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('variants under a dynamic prefix only use afterFiles', async () => {
+  const dir = langProject(LANG_PAGES)
+  const { beforeFiles, afterFiles } = await withDeviceRoutes({}, { cwd: dir, root: '[lang]' }).rewrites()
+  assert.deepEqual(beforeFiles, [], 'a dynamic first segment must never run before real files')
+  assert.ok(afterFiles.length > 0)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('static routes under a prefix still collapse into one rule', async () => {
+  const dir = langProject(LANG_PAGES)
+  const { afterFiles } = await withDeviceRoutes({}, { cwd: dir, root: '[lang]', variants: { mobile: defaultVariants.mobile } }).rewrites()
+  const collapsed = afterFiles.filter((r) => r.source.includes('__dr'))
+  assert.equal(collapsed.length, 1)
+  assert.equal(collapsed[0].destination, '/:lang/mobile/:__dr')
+  assert.match(collapsed[0].source, /^\/:lang\/:__dr\(/)
+  // the collapsed rule precedes the dynamic ones
+  assert.ok(afterFiles.indexOf(collapsed[0]) < afterFiles.findIndex((r) => r.source === '/:lang/blog/:slug'))
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('a variant dir overrides root for that variant only', async () => {
+  const dir = langProject([
+    '[lang]/mobile/about/page.tsx',
+    'tablet/[lang]/about/page.tsx', // other layout: the variant folder comes first
+    '[lang]/about/page.tsx',
+  ])
+  const variants = { tablet: { match: ['iPad'], dir: 'tablet' }, mobile: ['Mobi'] }
+  const { beforeFiles, afterFiles } = await withDeviceRoutes({}, { cwd: dir, root: '[lang]', variants }).rewrites()
+
+  assert.deepEqual(pairsOf([...beforeFiles, ...afterFiles]), [
+    '/:lang/about -> /:lang/mobile/about', // from root
+    '/:lang/about -> /tablet/:lang/about', // dir wins over root
+  ])
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('dir works without root and may include route groups', async () => {
+  const dir = langProject(['(site)/[lang]/m/page.tsx', '(site)/[lang]/m/about/page.tsx'])
+  const variants = { mobile: { match: ['Mobi'], dir: '(site)/[lang]/m' } }
+  const { afterFiles, beforeFiles } = await withDeviceRoutes({}, { cwd: dir, variants }).rewrites()
+  assert.deepEqual(pairsOf([...beforeFiles, ...afterFiles]), [
+    '/:lang -> /:lang/m',
+    '/:lang/about -> /:lang/m/about',
+  ])
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('a static prefix keeps static rules in beforeFiles', async () => {
+  const dir = langProject(['site/mobile/page.tsx', 'site/mobile/about/page.tsx'])
+  const variants = { mobile: { match: ['Mobi'], dir: 'site/mobile' } }
+  const { beforeFiles, afterFiles } = await withDeviceRoutes({}, { cwd: dir, variants }).rewrites()
+  assert.deepEqual(afterFiles, [])
+  assert.deepEqual(pairsOf(beforeFiles), ['/site -> /site/mobile', '/site/about -> /site/mobile/about'])
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('redirectVariantPaths keeps the prefix', async () => {
+  const dir = langProject(LANG_PAGES)
+  const config = withDeviceRoutes({}, { cwd: dir, root: '[lang]', redirectVariantPaths: true })
+  const redirects = await config.redirects()
+  assert.deepEqual(
+    redirects.map((r) => [r.source, r.destination]).sort(),
+    [
+      ['/:lang/bot/:path*', '/:lang/:path*'],
+      ['/:lang/mobile/:path*', '/:lang/:path*'],
+      ['/:lang/tablet/:path*', '/:lang/:path*'],
+    ]
+  )
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('the redirect catch-all does not shadow a prefix parameter named path', async () => {
+  const dir = langProject(['[path]/mobile/page.tsx'])
+  const config = withDeviceRoutes({}, { cwd: dir, root: '[path]', redirectVariantPaths: true })
+  const [redirect] = (await config.redirects()).filter((r) => r.source.includes('mobile'))
+  assert.equal(redirect.source, '/:path/mobile/:__path*')
+  assert.equal(redirect.destination, '/:path/:__path*')
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('resolveVariantPath rejects folders that cannot work', () => {
+  const v = (dir) => ({ dir })
+  assert.throws(() => resolveVariantPath('m', v('[lang]/[device]')), /plain static folder/)
+  assert.throws(() => resolveVariantPath('m', v('[lang]/(group)')), /plain static folder/)
+  assert.throws(() => resolveVariantPath('m', v('../outside')), /not a valid folder path/)
+  assert.throws(() => resolveVariantPath('m', v('_private/mobile')), /not a routable folder/)
+  assert.throws(() => normalizeVariant({ match: ['x'], dir: '  ' }, 'm'), /"dir" must be a non-empty string/)
+
+  const ok = resolveVariantPath('mobile', {}, '[lang]')
+  assert.deepEqual(ok, { rel: '[lang]/mobile', folder: 'mobile', prefixSegments: [':lang'], prefixScores: [1] })
+  assert.equal(resolveVariantPath('mobile', v('./a\\b//mobile/')).rel, 'a/b/mobile')
+})
+
+test('debug output lists where each variant was looked up', async () => {
+  const dir = langProject(LANG_PAGES)
+  const logs = []
+  const original = console.log
+  console.log = (...args) => logs.push(args.join(' '))
+  try {
+    await withDeviceRoutes({}, { cwd: dir, root: '[lang]', debug: true, variants: { mobile: ['Mobi'], tv: ['SmartTV'] } }).rewrites()
+  } finally {
+    console.log = original
+  }
+  const out = logs.join('\n')
+  assert.match(out, /variant "mobile": \[lang\]\/mobile\/\s+\(found\)/)
+  assert.match(out, /variant "tv": \[lang\]\/tv\/\s+\(not found\)/)
+  assert.match(out, /\/:lang\/about {2}-> {2}\/:lang\/mobile\/about/)
+  fs.rmSync(dir, { recursive: true, force: true })
 })
 
 test.after(() => fs.rmSync(root, { recursive: true, force: true }))

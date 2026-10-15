@@ -6,7 +6,9 @@ const React = require('react')
 const { renderToStaticMarkup } = require('react-dom/server')
 
 const { compileMatcher, getMatcher, toDeviceInfo, defaultVariants } = require('../lib/variants.js')
-const { DeviceProvider, useDevice } = require('../context.js')
+const { DeviceProvider, RouteDeviceProvider, useDevice } = require('../context.js')
+const { normalizeRouteVariants, detectRouteVariant } = require('../lib/route.js')
+const { LayoutRouterContext } = require('next/dist/shared/lib/app-router-context.shared-runtime')
 const { getDevice, DeviceBoundary } = require('../server.js')
 
 const UA = {
@@ -162,6 +164,97 @@ test('DeviceProvider defaults variant to null when omitted', () => {
     renderToStaticMarkup(React.createElement(DeviceProvider, null, React.createElement(Probe)))
   )
   assert.match(html, /"variant":null/)
+})
+
+/* ------------------------------ matcher cache ------------------------------ */
+
+test('getMatcher shares one compiled matcher between equal inline objects', () => {
+  // `<DeviceBoundary variants={{ ... }}>` builds a fresh object every render.
+  const a = getMatcher({ tv: ['Tizen'], mobile: ['Mobi'] })
+  const b = getMatcher({ tv: ['Tizen'], mobile: ['Mobi'] })
+  assert.equal(a, b)
+  assert.notEqual(a, getMatcher({ mobile: ['Mobi'], tv: ['Tizen'] }), 'key order is priority, so it is part of the identity')
+  assert.equal(a('Tizen Mobi'), 'tv')
+})
+
+/* --------------------------- route-based detection --------------------------- */
+
+test('normalizeRouteVariants accepts arrays, maps and per-variant overrides', () => {
+  assert.deepEqual(normalizeRouteVariants(['mobile', 'tv']), [
+    { name: 'mobile', segment: 'mobile', depth: null },
+    { name: 'tv', segment: 'tv', depth: null },
+  ])
+  assert.deepEqual(normalizeRouteVariants({ mobile: 'm', tablet: { segment: 't', depth: 1 }, bot: false }), [
+    { name: 'mobile', segment: 'm', depth: null },
+    { name: 'tablet', segment: 't', depth: 1 },
+  ])
+  assert.deepEqual(normalizeRouteVariants().map((v) => v.name), ['bot', 'tablet', 'mobile'])
+})
+
+test('detectRouteVariant reads the segment at the expected depth only', () => {
+  const variants = normalizeRouteVariants()
+  assert.equal(detectRouteVariant(['mobile', 'about'], variants), 'mobile')
+  assert.equal(detectRouteVariant(['about'], variants), null)
+  // A blog slug that happens to be "mobile" must not be mistaken for the variant.
+  assert.equal(detectRouteVariant(['blog', 'mobile'], variants), null)
+  assert.equal(detectRouteVariant(['en', 'mobile', 'about'], variants, 1), 'mobile')
+  assert.equal(detectRouteVariant(['en', 'mobile', 'about'], variants, 0), null)
+  assert.equal(detectRouteVariant(['tablet', 'en'], normalizeRouteVariants({ tablet: { depth: 0 } }), 5), 'tablet', 'a per-variant depth overrides the default')
+  assert.equal(detectRouteVariant(null, variants), null, 'outside the App Router')
+})
+
+/** Render under a fake App Router layout whose child segments are `segments`. */
+function renderAt(segments, props = {}) {
+  const tree = segments.reduceRight((child, segment) => [segment, { children: child }], ['__PAGE__', {}])
+  const parentTree = ['', { children: tree }]
+  return unescape(
+    renderToStaticMarkup(
+      React.createElement(
+        LayoutRouterContext.Provider,
+        { value: { parentTree, tree: parentTree } }, // `tree` in Next 14, `parentTree` in 15
+        React.createElement(RouteDeviceProvider, props, React.createElement(Probe))
+      )
+    )
+  )
+}
+
+test('RouteDeviceProvider derives the device from the rendered route', () => {
+  assert.match(renderAt(['mobile', 'about']), /"variant":"mobile".*"isMobile":true/)
+  assert.match(renderAt(['tablet']), /"variant":"tablet"/)
+  assert.match(renderAt(['bot', 'about']), /"isBot":true/)
+  assert.match(renderAt(['about']), /"variant":null.*"isBase":true/)
+  assert.match(renderAt([]), /"isBase":true/, 'the index route')
+})
+
+test('RouteDeviceProvider supports depth, custom folders and custom variants', () => {
+  assert.match(renderAt(['en', 'mobile', 'about'], { depth: 1 }), /"variant":"mobile"/)
+  assert.match(renderAt(['en', 'm'], { depth: 1, variants: { mobile: 'm' } }), /"variant":"mobile"/)
+  assert.match(renderAt(['tv', 'x'], { variants: ['tv'] }), /"variant":"tv".*"isMobile":false/)
+})
+
+test('RouteDeviceProvider falls back to the base route outside the App Router', () => {
+  const html = unescape(renderToStaticMarkup(React.createElement(RouteDeviceProvider, null, React.createElement(Probe))))
+  assert.match(html, /"isBase":true/)
+})
+
+const ABOUT_TREE = ['', { children: ['about', { children: ['__PAGE__', {}] }] }]
+const LAYOUT_ABOUT = { parentTree: ABOUT_TREE, tree: ABOUT_TREE }
+
+test('a literal DeviceProvider below RouteDeviceProvider still wins', () => {
+  const html = unescape(
+    renderToStaticMarkup(
+      React.createElement(
+        LayoutRouterContext.Provider,
+        { value: LAYOUT_ABOUT },
+        React.createElement(
+          RouteDeviceProvider,
+          null,
+          React.createElement(DeviceProvider, { variant: 'mobile' }, React.createElement(Probe))
+        )
+      )
+    )
+  )
+  assert.match(html, /"variant":"mobile"/)
 })
 
 /* ------------------------------ getDevice() wiring ------------------------------ */

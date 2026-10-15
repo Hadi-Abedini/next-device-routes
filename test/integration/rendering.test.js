@@ -14,65 +14,25 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('fs')
 const path = require('path')
-const http = require('http')
-const { execFileSync } = require('child_process')
-const { duplexPair } = require('stream')
+const { startApp, UA: ALL_UA } = require('./helpers')
 
-const ROOT = path.resolve(__dirname, '../..')
-const APP_DIR = path.join(ROOT, 'test/fixtures/rendering-app')
-const DIST_DIR = path.join(APP_DIR, '.next')
-const NEXT_BIN = require.resolve('next/dist/bin/next', { paths: [ROOT] })
-
-const UA = {
-  desktop: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36',
-  iphone: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148 Safari/604.1',
-  ipad: 'Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) Mobile/15E148 Safari/604.1',
-  googlebot: 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-}
+const { desktop, iphone, ipad, googlebot } = ALL_UA
+const UA = { desktop, iphone, ipad, googlebot }
 const EXPECTED = { desktop: 'base', iphone: 'mobile', ipad: 'tablet', googlebot: 'bot' }
 
-let server
-let manifest
+let app
+let request
+let isPrerendered
+let isNoStore
+let DIST_DIR
 
 test.before(async () => {
-  const env = { ...process.env, NEXT_TELEMETRY_DISABLED: '1' }
-  execFileSync(process.execPath, [NEXT_BIN, 'build', APP_DIR], { cwd: APP_DIR, env, stdio: 'pipe' })
-  manifest = JSON.parse(fs.readFileSync(path.join(DIST_DIR, 'prerender-manifest.json'), 'utf8'))
-
-  process.env.NEXT_TELEMETRY_DISABLED = '1'
-  const next = require(require.resolve('next', { paths: [ROOT] }))
-  const app = next({ dev: false, dir: APP_DIR, quiet: true })
-  await app.prepare()
-  const handle = app.getRequestHandler()
-  server = http.createServer((req, res) => handle(req, res))
+  app = await startApp('rendering-app')
+  ;({ request, isPrerendered, isNoStore } = app)
+  DIST_DIR = app.distDir
 })
 
-test.after(() => {
-  server?.close()
-  fs.rmSync(DIST_DIR, { recursive: true, force: true })
-})
-
-/** One request over a fresh in-memory connection. */
-function request(pathname, headers = {}) {
-  return new Promise((resolve, reject) => {
-    const [client, serverSide] = duplexPair()
-    server.emit('connection', serverSide)
-    const req = http.request(
-      { path: pathname, headers: { host: 'localhost', ...headers }, createConnection: () => client },
-      (res) => {
-        let body = ''
-        res.setEncoding('utf8')
-        res.on('data', (chunk) => (body += chunk))
-        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }))
-      }
-    )
-    req.on('error', reject)
-    req.end()
-  })
-}
-
-const isPrerendered = (route) => Object.hasOwn(manifest.routes, route)
-const isNoStore = (res) => /no-store/.test(res.headers['cache-control'] || '')
+test.after(() => app?.close())
 
 /* ------------------------------ build-time classification ------------------------------ */
 

@@ -1,7 +1,7 @@
 {
   "name": "next-device-routes",
-  "version": "0.4.0",
-  "description": "Device-type and crawler aware routing for the Next.js App Router. No middleware, no dependencies.",
+  "version": "0.5.0",
+  "description": "Device-type and crawler aware routing for the Next.js App Router. No middleware, no dependencies, static generation preserved.",
   "main": "./index.js",
   "types": "./index.d.ts",
   "exports": {
@@ -28,11 +28,12 @@
     "context.d.ts",
     "lib/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "scripts": {
-    "test": "node --test \"test/*.test.js\"",
-    "test:integration": "node --test \"test/integration/*.test.js\"",
+    "test": "node scripts/run-tests.js test",
+    "test:integration": "node scripts/run-tests.js test/integration",
     "prepublishOnly": "npm test && npm run test:integration"
   },
   "keywords": [
@@ -47,7 +48,10 @@
     "seo",
     "rewrites",
     "react-hook",
-    "context"
+    "context",
+    "ssg",
+    "static-generation",
+    "i18n"
   ],
   "author": "",
   "license": "MIT",
@@ -63,7 +67,7 @@
     "node": ">=18.17.0"
   },
   "peerDependencies": {
-    "next": ">=13.4.0",
+    "next": ">=14.0.0",
     "react": ">=18.0.0"
   },
   "devDependencies": {

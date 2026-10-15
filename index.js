@@ -10,13 +10,17 @@
  *   app/page.js          -> served to everyone by default
  *   app/mobile/page.js   -> served to phones on "/"
  *   app/about/page.js    -> served to phones too, because app/mobile/about is missing
+ *
+ * Variant folders can live anywhere under the app directory — `root` sets a
+ * default location for all of them (e.g. `[lang]`), `variants.<name>.dir`
+ * overrides it for a single one.
  */
 
-const { defaultVariants } = require('./lib/variants')
+const { defaultVariants, CRAWLER_TOKENS, TABLET_TOKENS, MOBILE_TOKENS } = require('./lib/variants')
 const { findAppDir } = require('./lib/scan')
 const { buildRules, buildVariantRedirects } = require('./lib/rules')
 
-const EMPTY = { beforeFiles: [], afterFiles: [], folders: [], pairs: [] }
+const EMPTY = { beforeFiles: [], afterFiles: [], folders: [], pairs: [], found: [], searched: [] }
 
 /** Normalize whatever `nextConfig.rewrites()` returned into the object form. */
 async function resolveRewrites(fn) {
@@ -43,6 +47,7 @@ function withDeviceRoutes(nextConfig = {}, options = {}) {
   const {
     variants = defaultVariants,
     appDir,
+    root = '',
     pageExtensions = nextConfig.pageExtensions,
     redirectVariantPaths = false,
     permanentRedirects = false,
@@ -62,15 +67,17 @@ function withDeviceRoutes(nextConfig = {}, options = {}) {
       return (cache = EMPTY)
     }
 
-    cache = buildRules(dir, variants, pageExtensions, { collapse })
+    cache = buildRules(dir, variants, pageExtensions, { collapse, root })
 
     if (debug) {
-      const label = cache.folders.length ? cache.folders.join(', ') : '(none found)'
-      const ruleCount = cache.beforeFiles.length + cache.afterFiles.length
-      console.log(`[next-device-routes] variants: ${label}`)
+      console.log(`[next-device-routes] app directory: ${dir}`)
+      for (const { name, rel, exists } of cache.searched) {
+        console.log(`  variant "${name}": ${rel}/  ${exists ? '(found)' : '(not found)'}`)
+      }
       for (const [source, destination] of cache.pairs) {
         console.log(`  ${source}  ->  ${destination}`)
       }
+      const ruleCount = cache.beforeFiles.length + cache.afterFiles.length
       if (!cache.pairs.length) console.log('  no variant pages found')
       else console.log(`  ${cache.pairs.length} routes in ${ruleCount} rewrite rule(s)`)
     }
@@ -94,7 +101,7 @@ function withDeviceRoutes(nextConfig = {}, options = {}) {
     async redirects() {
       const user = typeof nextConfig.redirects === 'function' ? await nextConfig.redirects() : []
       if (!redirectVariantPaths) return user
-      return [...user, ...buildVariantRedirects(scan().folders, permanentRedirects)]
+      return [...user, ...buildVariantRedirects(scan().found, permanentRedirects)]
     },
   }
 }
@@ -102,4 +109,7 @@ function withDeviceRoutes(nextConfig = {}, options = {}) {
 module.exports = withDeviceRoutes
 module.exports.withDeviceRoutes = withDeviceRoutes
 module.exports.defaultVariants = defaultVariants
+module.exports.CRAWLER_TOKENS = CRAWLER_TOKENS
+module.exports.TABLET_TOKENS = TABLET_TOKENS
+module.exports.MOBILE_TOKENS = MOBILE_TOKENS
 module.exports.default = withDeviceRoutes

@@ -19,12 +19,34 @@ export interface DeviceProviderProps {
    * `app/mobile/layout`) keeps the route static. Use `<DeviceBoundary>` from
    * `next-device-routes/server` where only the request can tell.
    */
-  variant: string | null
+  variant?: string | null
+  children: ReactNode
+}
+
+/** `['mobile']`, `{ mobile: 'm' }` or `{ mobile: { segment: 'm', depth: 1 } }`; key order is priority. */
+export type RouteVariants =
+  | string[]
+  | Record<string, string | false | null | { segment?: string; depth?: number }>
+
+export interface RouteDeviceProviderProps {
+  /** Variant folder names in priority order. Default: `bot`, `tablet`, `mobile`. */
+  variants?: RouteVariants
+  /**
+   * Route segments between this layout and the variant folders. `0` (default) when the
+   * variant folders are direct children of this layout; `1` for a root layout above `[lang]/`.
+   */
+  depth?: number
   children: ReactNode
 }
 
 /** Provide a device to descendant Client Components that call `useDevice()`. The closest provider wins. */
 export declare function DeviceProvider(props: DeviceProviderProps): ReactElement
+
+/**
+ * Provides the device by reading which variant folder the router rendered — no request read,
+ * so the route stays statically generated. Place it in a shared (root) layout.
+ */
+export declare function RouteDeviceProvider(props: RouteDeviceProviderProps): ReactElement
 
 /** Must be called under a `<DeviceProvider>`; throws otherwise. */
 export declare function useDevice(): DeviceInfo
