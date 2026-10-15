@@ -1,6 +1,6 @@
 {
   "name": "next-device-routes",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Device-type and crawler aware routing for the Next.js App Router. No middleware, no dependencies, static generation preserved.",
   "main": "./index.js",
   "types": "./index.d.ts",
